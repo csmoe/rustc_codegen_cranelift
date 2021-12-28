@@ -154,6 +154,6 @@ pub(crate) fn maybe_create_entry_wrapper(
         }
         m.define_function(cmain_func_id, &mut ctx, &mut NullTrapSink {}, &mut NullStackMapSink {})
             .unwrap();
-        unwind_context.add_function(cmain_func_id, &ctx, m.isa());
+        //unwind_context.add_function(cmain_func_id, &ctx, m.isa());
     }
 }

@@ -150,6 +150,7 @@ pub(crate) fn codegen_fn<'tcx>(
             .unwrap()
     });
 
+    // /*
     // Write optimized function to file for debugging
     crate::pretty_clif::write_clif_file(
         tcx,
@@ -186,6 +187,7 @@ pub(crate) fn codegen_fn<'tcx>(
         }
         unwind_context.add_function(func_id, &context, isa);
     });
+    //*/
 
     // Clear context to make it usable for the next function
     context.clear();
