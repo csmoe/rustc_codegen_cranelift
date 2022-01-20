@@ -17,6 +17,7 @@ use rustc_session::Session;
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
+use crate::lazy_module::LazyModule;
 use crate::{prelude::*, BackendConfig};
 
 struct ModuleCodegenResult(CompiledModule, Option<(WorkProductId, WorkProduct)>);
@@ -120,7 +121,8 @@ fn module_codegen(
     let mono_items = cgu.items_in_deterministic_order(tcx);
 
     let isa = crate::build_isa(tcx.sess, &backend_config);
-    let mut module = make_module(tcx.sess, isa, cgu_name.as_str().to_string());
+    let mut module =
+        LazyModule::new_eager(make_module(tcx.sess, isa, cgu_name.as_str().to_string()));
 
     let mut cx = crate::CodegenCx::new(
         tcx,
@@ -175,7 +177,7 @@ fn module_codegen(
             &backend_config,
             cgu.name().as_str().to_string(),
             ModuleKind::Regular,
-            module,
+            module.finalize().unwrap(),
             debug_context,
             unwind_context,
         )

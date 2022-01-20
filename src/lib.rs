@@ -58,6 +58,7 @@ mod discriminant;
 mod driver;
 mod inline_asm;
 mod intrinsics;
+mod lazy_module;
 mod linkage;
 mod main_shim;
 mod num;
