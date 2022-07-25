@@ -199,9 +199,9 @@ pub(super) fn codegen_simd_intrinsic_call<'tcx>(
                             &idx_bytes[4 * i..4 * i + 4],
                         )
                         .expect("read_target_uint");
-                        u16::try_from(idx).expect("try_from u32")
+                        u32::try_from(idx).expect("try_from u32")
                     })
-                    .collect::<Vec<u16>>()
+                    .collect::<Vec<u32>>()
             };
 
             for &idx in &indexes {
