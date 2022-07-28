@@ -26,12 +26,12 @@ smallvec = "1.8.1"
 
 [patch.crates-io]
 # Uncomment to use local checkout of cranelift
-cranelift-codegen = { git = "https://github.com/bytecodealliance/wasmtime.git", branch = "main" }
-cranelift-frontend = { git = "https://github.com/bytecodealliance/wasmtime.git", branch = "main" }
-cranelift-module = { git = "https://github.com/bytecodealliance/wasmtime.git", branch = "main" }
-cranelift-native = { git = "https://github.com/bytecodealliance/wasmtime.git", branch = "main" }
-cranelift-jit = { git = "https://github.com/bytecodealliance/wasmtime.git", branch = "main" }
-cranelift-object = { git = "https://github.com/bytecodealliance/wasmtime.git", branch = "main" }
+cranelift-codegen = { git = "https://github.com/afonso360/wasmtime.git", branch = "x64-tls-coff" }
+cranelift-frontend = { git = "https://github.com/afonso360/wasmtime.git", branch = "x64-tls-coff" }
+cranelift-module = { git = "https://github.com/afonso360/wasmtime.git", branch = "x64-tls-coff" }
+cranelift-native = { git = "https://github.com/afonso360/wasmtime.git", branch = "x64-tls-coff" }
+cranelift-jit = { git = "https://github.com/afonso360/wasmtime.git", branch = "x64-tls-coff" }
+cranelift-object = { git = "https://github.com/afonso360/wasmtime.git", branch = "x64-tls-coff" }
 
 #gimli = { path = "../" }
 

@@ -318,7 +318,7 @@ fn main() {
 
     from_decimal_string();
 
-    #[cfg(not(any(jit, windows)))]
+    #[cfg(not(jit))]
     test_tls();
 
     #[cfg(all(not(jit), target_arch = "x86_64", target_os = "linux"))]

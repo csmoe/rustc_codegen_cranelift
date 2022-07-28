@@ -51,7 +51,7 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 [[package]]
 name = "cranelift-bforest"
 version = "0.87.0"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?branch=main#8137432e67c920b73a3bbcc4eb72ae5095d31f41"
+source = "git+https://github.com/afonso360/wasmtime.git?branch=x64-tls-coff#f5648290131f7f481a9083628c6842c025c29a90"
 dependencies = [
  "cranelift-entity",
 ]
@@ -59,7 +59,7 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen"
 version = "0.87.0"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?branch=main#8137432e67c920b73a3bbcc4eb72ae5095d31f41"
+source = "git+https://github.com/afonso360/wasmtime.git?branch=x64-tls-coff#f5648290131f7f481a9083628c6842c025c29a90"
 dependencies = [
  "cranelift-bforest",
  "cranelift-codegen-meta",
@@ -76,7 +76,7 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen-meta"
 version = "0.87.0"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?branch=main#8137432e67c920b73a3bbcc4eb72ae5095d31f41"
+source = "git+https://github.com/afonso360/wasmtime.git?branch=x64-tls-coff#f5648290131f7f481a9083628c6842c025c29a90"
 dependencies = [
  "cranelift-codegen-shared",
 ]
@@ -84,17 +84,17 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen-shared"
 version = "0.87.0"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?branch=main#8137432e67c920b73a3bbcc4eb72ae5095d31f41"
+source = "git+https://github.com/afonso360/wasmtime.git?branch=x64-tls-coff#f5648290131f7f481a9083628c6842c025c29a90"
 
 [[package]]
 name = "cranelift-entity"
 version = "0.87.0"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?branch=main#8137432e67c920b73a3bbcc4eb72ae5095d31f41"
+source = "git+https://github.com/afonso360/wasmtime.git?branch=x64-tls-coff#f5648290131f7f481a9083628c6842c025c29a90"
 
 [[package]]
 name = "cranelift-frontend"
 version = "0.87.0"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?branch=main#8137432e67c920b73a3bbcc4eb72ae5095d31f41"
+source = "git+https://github.com/afonso360/wasmtime.git?branch=x64-tls-coff#f5648290131f7f481a9083628c6842c025c29a90"
 dependencies = [
  "cranelift-codegen",
  "log",
@@ -105,12 +105,12 @@ dependencies = [
 [[package]]
 name = "cranelift-isle"
 version = "0.87.0"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?branch=main#8137432e67c920b73a3bbcc4eb72ae5095d31f41"
+source = "git+https://github.com/afonso360/wasmtime.git?branch=x64-tls-coff#f5648290131f7f481a9083628c6842c025c29a90"
 
 [[package]]
 name = "cranelift-jit"
 version = "0.87.0"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?branch=main#8137432e67c920b73a3bbcc4eb72ae5095d31f41"
+source = "git+https://github.com/afonso360/wasmtime.git?branch=x64-tls-coff#f5648290131f7f481a9083628c6842c025c29a90"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -127,7 +127,7 @@ dependencies = [
 [[package]]
 name = "cranelift-module"
 version = "0.87.0"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?branch=main#8137432e67c920b73a3bbcc4eb72ae5095d31f41"
+source = "git+https://github.com/afonso360/wasmtime.git?branch=x64-tls-coff#f5648290131f7f481a9083628c6842c025c29a90"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -136,7 +136,7 @@ dependencies = [
 [[package]]
 name = "cranelift-native"
 version = "0.87.0"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?branch=main#8137432e67c920b73a3bbcc4eb72ae5095d31f41"
+source = "git+https://github.com/afonso360/wasmtime.git?branch=x64-tls-coff#f5648290131f7f481a9083628c6842c025c29a90"
 dependencies = [
  "cranelift-codegen",
  "libc",
@@ -146,7 +146,7 @@ dependencies = [
 [[package]]
 name = "cranelift-object"
 version = "0.87.0"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?branch=main#8137432e67c920b73a3bbcc4eb72ae5095d31f41"
+source = "git+https://github.com/afonso360/wasmtime.git?branch=x64-tls-coff#f5648290131f7f481a9083628c6842c025c29a90"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
