@@ -173,6 +173,10 @@ jobs:
 
         ./y.exe build
 
+        build/rustc-clif.exe example/mini_core.rs --crate-name mini_core --crate-type lib,dylib -L crate=target/out --out-dir target/out -Cdebuginfo=2
+        build/rustc-clif.exe example/mini_core_hello_world.rs --crate-name mini_core_hello_world --crate-type bin -L crate=target/out --out-dir target/out -Cdebuginfo=2
+        ./target/out/mini_core_hello_world.exe abc bcd
+
     - name: Package prebuilt cg_clif
       # don't use compression as xzip isn't supported by tar on windows and bzip2 hangs
       run: tar cvf cg_clif.tar build
