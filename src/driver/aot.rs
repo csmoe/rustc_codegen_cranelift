@@ -4,6 +4,7 @@
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use rustc_codegen_ssa::back::metadata::create_compressed_metadata_file;
 use rustc_codegen_ssa::{CodegenResults, CompiledModule, CrateInfo, ModuleKind};
@@ -27,14 +28,19 @@ struct ModuleCodegenResult {
     existing_work_product: Option<(WorkProductId, WorkProduct)>,
 }
 
-impl<HCX> HashStable<HCX> for ModuleCodegenResult {
+enum OngoingModuleCodegen {
+    Sync(Result<ModuleCodegenResult, String>),
+    Async(JoinHandle<Result<ModuleCodegenResult, String>>),
+}
+
+impl<HCX> HashStable<HCX> for OngoingModuleCodegen {
     fn hash_stable(&self, _: &mut HCX, _: &mut StableHasher) {
         // do nothing
     }
 }
 
 pub(crate) struct OngoingCodegen {
-    modules: Vec<Result<ModuleCodegenResult, String>>,
+    modules: Vec<OngoingModuleCodegen>,
     allocator_module: Option<CompiledModule>,
     metadata_module: Option<CompiledModule>,
     metadata: EncodedMetadata,
@@ -50,7 +56,15 @@ impl OngoingCodegen {
         let mut work_products = FxHashMap::default();
         let mut modules = vec![];
 
-        for module_codegen_result in self.modules {
+        for module_codegen in self.modules {
+            let module_codegen_result = match module_codegen {
+                OngoingModuleCodegen::Sync(module_codegen_result) => module_codegen_result,
+                OngoingModuleCodegen::Async(join_handle) => match join_handle.join() {
+                    Ok(module_codegen_result) => module_codegen_result,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                },
+            };
+
             let module_codegen_result = match module_codegen_result {
                 Ok(module_codegen_result) => module_codegen_result,
                 Err(err) => sess.fatal(&err),
@@ -238,7 +252,7 @@ fn module_codegen(
         Arc<GlobalAsmConfig>,
         rustc_span::Symbol,
     ),
-) -> Result<ModuleCodegenResult, String> {
+) -> OngoingModuleCodegen {
     let cgu = tcx.codegen_unit(cgu_name);
     let mono_items = cgu.items_in_deterministic_order(tcx);
 
@@ -280,23 +294,29 @@ fn module_codegen(
         cgu.is_primary(),
     );
 
-    let global_asm_object_file = crate::global_asm::compile_global_asm(
-        &global_asm_config,
-        cgu.name().as_str(),
-        &cx.global_asm,
-    )?;
+    // FIXME Don't acquire for first iteration to avoid deadlock
+    let token = tcx.sess.jobserver.acquire().unwrap();
 
-    tcx.sess.time("write object file", || {
-        emit_cgu(
-            &global_asm_config.output_filenames,
-            &cx.profiler,
-            cgu.name().as_str().to_string(),
-            module,
-            cx.debug_context,
-            cx.unwind_context,
-            global_asm_object_file,
-        )
-    })
+    let cgu_name = cgu.name().as_str().to_owned();
+
+    OngoingModuleCodegen::Async(std::thread::spawn(move || {
+        let global_asm_object_file =
+            crate::global_asm::compile_global_asm(&global_asm_config, &cgu_name, &cx.global_asm)?;
+
+        let codegen_result = cx.profiler.verbose_generic_activity("write object file").run(|| {
+            emit_cgu(
+                &global_asm_config.output_filenames,
+                &cx.profiler,
+                cgu_name,
+                module,
+                cx.debug_context,
+                cx.unwind_context,
+                global_asm_object_file,
+            )
+        });
+        std::mem::drop(token);
+        codegen_result
+    }))
 }
 
 pub(crate) fn run_aot(
@@ -344,7 +364,9 @@ pub(crate) fn run_aot(
                             )
                             .0
                     }
-                    CguReuse::PreLto => reuse_workproduct_for_cgu(tcx, &*cgu),
+                    CguReuse::PreLto => {
+                        OngoingModuleCodegen::Sync(reuse_workproduct_for_cgu(tcx, &*cgu))
+                    }
                     CguReuse::PostLto => unreachable!(),
                 }
             })
