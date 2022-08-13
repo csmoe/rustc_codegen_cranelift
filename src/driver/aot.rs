@@ -266,18 +266,14 @@ fn module_codegen(
         cgu_name,
     );
     super::predefine_mono_items(tcx, &mut module, &mono_items);
-    let mut cached_context = Context::new();
+    let mut codegened_functions = vec![];
     for (mono_item, _) in mono_items {
         match mono_item {
             MonoItem::Fn(inst) => {
                 tcx.sess.time("codegen fn", || {
-                    crate::base::codegen_and_compile_fn(
-                        tcx,
-                        &mut cx,
-                        &mut cached_context,
-                        &mut module,
-                        inst,
-                    )
+                    let codegened_function =
+                        crate::base::codegen_fn(tcx, &mut cx, Function::new(), &mut module, inst);
+                    codegened_functions.push(codegened_function);
                 });
             }
             MonoItem::Static(def_id) => crate::constant::codegen_static(tcx, &mut module, def_id),
@@ -300,6 +296,10 @@ fn module_codegen(
     let cgu_name = cgu.name().as_str().to_owned();
 
     OngoingModuleCodegen::Async(std::thread::spawn(move || {
+        for codegened_func in codegened_functions {
+            crate::base::compile_fn(&mut cx, &mut Context::new(), &mut module, codegened_func);
+        }
+
         let global_asm_object_file =
             crate::global_asm::compile_global_asm(&global_asm_config, &cgu_name, &cx.global_asm)?;
 

@@ -11,7 +11,7 @@ use crate::debuginfo::FunctionDebugContext;
 use crate::prelude::*;
 use crate::pretty_clif::CommentWriter;
 
-struct CodegenedFunction {
+pub(crate) struct CodegenedFunction {
     symbol_name: String,
     func_id: FuncId,
     func: Function,
@@ -35,7 +35,7 @@ pub(crate) fn codegen_and_compile_fn<'tcx>(
     compile_fn(cx, cached_context, module, codegened_func);
 }
 
-fn codegen_fn<'tcx>(
+pub(crate) fn codegen_fn<'tcx>(
     tcx: TyCtxt<'tcx>,
     cx: &mut crate::CodegenCx,
     cached_func: Function,
@@ -135,7 +135,7 @@ fn codegen_fn<'tcx>(
     CodegenedFunction { symbol_name, func_id, func, clif_comments, func_debug_cx }
 }
 
-fn compile_fn(
+pub(crate) fn compile_fn(
     cx: &mut crate::CodegenCx,
     cached_context: &mut Context,
     module: &mut dyn Module,
