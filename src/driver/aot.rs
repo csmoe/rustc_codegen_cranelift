@@ -104,6 +104,8 @@ impl OngoingCodegen {
             }
         }
 
+        sess.jobserver.acquire_raw().unwrap();
+
         (
             CodegenResults {
                 modules,
@@ -340,6 +342,8 @@ pub(crate) fn run_aot(
     }
 
     let global_asm_config = Arc::new(crate::global_asm::GlobalAsmConfig::new(tcx));
+
+    tcx.sess.jobserver.release_raw().unwrap();
 
     let modules = super::time(tcx, backend_config.display_cg_time, "codegen mono items", || {
         cgus.iter()
