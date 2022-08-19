@@ -255,6 +255,8 @@ fn module_codegen(
         rustc_span::Symbol,
     ),
 ) -> OngoingModuleCodegen {
+    let token = tcx.sess.jobserver.acquire().unwrap();
+
     let cgu = tcx.codegen_unit(cgu_name);
     let mono_items = cgu.items_in_deterministic_order(tcx);
 
@@ -291,9 +293,6 @@ fn module_codegen(
         false,
         cgu.is_primary(),
     );
-
-    // FIXME Don't acquire for first iteration to avoid deadlock
-    let token = tcx.sess.jobserver.acquire().unwrap();
 
     let cgu_name = cgu.name().as_str().to_owned();
 
