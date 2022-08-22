@@ -4,8 +4,8 @@
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use rustc_codegen_ssa::back::metadata::create_compressed_metadata_file;
@@ -357,7 +357,7 @@ pub(crate) fn run_aot(
 
     let global_asm_config = Arc::new(crate::global_asm::GlobalAsmConfig::new(tcx));
 
-    let mut concurrency_limiter = ConcurrencyLimiter::new(tcx.sess);
+    let mut concurrency_limiter = ConcurrencyLimiter::new(tcx.sess, cgus.len());
 
     let modules = super::time(tcx, backend_config.display_cg_time, "codegen mono items", || {
         cgus.iter()
@@ -376,7 +376,12 @@ pub(crate) fn run_aot(
                             .with_task(
                                 dep_node,
                                 tcx,
-                                (backend_config.clone(), global_asm_config.clone(), cgu.name(), concurrency_limiter.acquire()),
+                                (
+                                    backend_config.clone(),
+                                    global_asm_config.clone(),
+                                    cgu.name(),
+                                    concurrency_limiter.acquire(),
+                                ),
                                 module_codegen,
                                 Some(rustc_middle::dep_graph::hash_result),
                             )
@@ -501,16 +506,31 @@ struct ConcurrencyLimiter {
     helper_thread: jobserver::HelperThread,
     rx_token: Receiver<()>,
     token_count: Arc<AtomicUsize>,
+
+    state: Arc<ConcurrencyLimiterState>,
+}
+
+#[derive(Debug)]
+struct ConcurrencyLimiterState {
+    pending_jobs: AtomicUsize,
+    active_jobs: AtomicUsize,
+    explicit_tokens: Mutex<Vec<jobserver::Acquired>>,
+    job_finished_tx: Mutex<Sender<()>>,
 }
 
 impl ConcurrencyLimiter {
-    fn new(sess: &Session) -> Self {
+    fn new(sess: &Session, pending_jobs: usize) -> Self {
         let (tx_token, rx_token) = std::sync::mpsc::channel();
-        tx_token.send(()).unwrap(); // Implicit token
+        //tx_token.send(()).unwrap(); // Implicit token
+        let token_count = Arc::new(AtomicUsize::new(0));
+        let token_count_helper = token_count.clone();
         let helper_thread = sess
             .jobserver
             .clone()
             .into_helper_thread(move |token| {
+                eprintln!("[jobserver] Acquired token");
+                let old_token_count = token_count_helper.fetch_add(1, Ordering::SeqCst);
+                eprintln!("[jobserver] Token count: {} -> {}", old_token_count, old_token_count + 1);
                 token.unwrap().drop_without_releasing();
                 tx_token.send(()).unwrap();
             })
@@ -519,15 +539,36 @@ impl ConcurrencyLimiter {
             jobserver: sess.jobserver.clone(),
             helper_thread,
             rx_token,
-            token_count: Arc::new(AtomicUsize::new(1)),
+            token_count,
+
+            state: Arc::new(ConcurrencyLimiterState {
+                pending_jobs: AtomicUsize::new(pending_jobs),
+                active_jobs: AtomicUsize::new(0),
+                explicit_tokens: Mutex::new(vec![]),
+                job_finished_tx: (),
+            })
         }
     }
 
     fn acquire(&mut self) -> ConcurrencyLimiterToken {
+        eprintln!("[jobserver] Acquiring token");
+        if self.token_count.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            eprintln!("[jobserver] Token count: 0 -> 1");
+            eprintln!("[jobserver] Used implicit token");
+            // Implicit token
+            return ConcurrencyLimiterToken {
+                jobserver: self.jobserver.clone(),
+                token_count: self.token_count.clone(),
+                state: self.state.clone(),
+            };
+        }
         self.helper_thread.request_token();
         let () = self.rx_token.recv().unwrap();
-        self.token_count.fetch_add(1, Ordering::SeqCst);
-        ConcurrencyLimiterToken { jobserver: self.jobserver.clone(), token_count: self.token_count.clone() }
+        ConcurrencyLimiterToken {
+            jobserver: self.jobserver.clone(),
+            token_count: self.token_count.clone(),
+            state: self.state.clone(),
+        }
     }
 }
 
@@ -535,6 +576,8 @@ impl ConcurrencyLimiter {
 struct ConcurrencyLimiterToken {
     jobserver: jobserver::Client,
     token_count: Arc<AtomicUsize>,
+
+    state: Arc<ConcurrencyLimiterState>,
 }
 
 impl Drop for ConcurrencyLimiter {
@@ -546,8 +589,16 @@ impl Drop for ConcurrencyLimiter {
 impl Drop for ConcurrencyLimiterToken {
     fn drop(&mut self) {
         // Don't release the implicit token
-        if self.token_count.fetch_sub(1, Ordering::SeqCst) > 1 {
+        eprintln!("[jobserver] Releasing token");
+        let old_token_count = self.token_count.fetch_sub(1, Ordering::SeqCst);
+        eprintln!("[jobserver] Token count: {} -> {}", old_token_count, old_token_count - 1);
+        // FIXME implement token forwarding
+        // FIXME never release implicit token
+        if old_token_count > 1 {
+            eprintln!("[jobserver] Released token");
             self.jobserver.release_raw().unwrap();
+        } else {
+            eprintln!("[jobserver] Not releasing implicit token")
         }
     }
 }
