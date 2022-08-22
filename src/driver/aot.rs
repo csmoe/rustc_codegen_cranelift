@@ -3,8 +3,7 @@
 
 use std::fs::File;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 use rustc_codegen_ssa::back::metadata::create_compressed_metadata_file;
@@ -502,10 +501,8 @@ fn determine_cgu_reuse<'tcx>(tcx: TyCtxt<'tcx>, cgu: &CodegenUnit<'tcx>) -> CguR
 
 struct ConcurrencyLimiter {
     helper_thread: jobserver::HelperThread,
-    rx_token: Receiver<jobserver::Acquired>,
-    rx_job_finished: Receiver<()>,
-
     state: Arc<Mutex<ConcurrencyLimiterState>>,
+    available_token_condvar: Arc<Condvar>,
 }
 
 #[derive(Debug)]
@@ -513,32 +510,33 @@ struct ConcurrencyLimiterState {
     pending_jobs: usize,
     active_jobs: usize,
     explicit_tokens: Vec<jobserver::Acquired>,
-    tx_job_finished: Sender<()>,
 }
 
 impl ConcurrencyLimiter {
     fn new(sess: &Session, pending_jobs: usize) -> Self {
-        let (tx_token, rx_token) = std::sync::mpsc::channel();
-        let (tx_job_finished, rx_job_finished) = std::sync::mpsc::channel();
+        let state = Arc::new(Mutex::new(ConcurrencyLimiterState {
+            pending_jobs,
+            active_jobs: 0,
+            explicit_tokens: vec![],
+        }));
+        let available_token_condvar = Arc::new(Condvar::new());
+
+        let state_helper = state.clone();
+        let available_token_condvar_helper = available_token_condvar.clone();
         let helper_thread = sess
             .jobserver
             .clone()
             .into_helper_thread(move |token| {
-                eprintln!("[jobserver] Acquired token");
-                tx_token.send(token.unwrap()).unwrap();
+                eprintln!("[jobserver] Acquired token from jobserver");
+                let mut state = state_helper.lock().unwrap();
+                state.explicit_tokens.push(token.unwrap());
+                available_token_condvar_helper.notify_one();
             })
             .unwrap();
         ConcurrencyLimiter {
             helper_thread,
-            rx_token,
-            rx_job_finished,
-
-            state: Arc::new(Mutex::new(ConcurrencyLimiterState {
-                pending_jobs,
-                active_jobs: 0,
-                explicit_tokens: vec![],
-                tx_job_finished,
-            })),
+            state,
+            available_token_condvar: Arc::new(Condvar::new()),
         }
     }
 
@@ -546,46 +544,45 @@ impl ConcurrencyLimiter {
         eprintln!("[jobserver] Acquiring token");
 
         let mut state = self.state.lock().unwrap();
-        if state.active_jobs == 0 {
-            state.active_jobs += 1;
-            assert!(state.active_jobs <= state.pending_jobs);
-            eprintln!(
-                "[jobserver] Using implicit token; active jobs: {} -> {}",
-                state.active_jobs - 1,
-                state.active_jobs
-            );
-            return ConcurrencyLimiterToken { state: self.state.clone() };
+        loop {
+            assert!(state.active_jobs + 1 <= state.pending_jobs);
+            if state.active_jobs == 0 {
+                state.active_jobs += 1;
+                eprintln!(
+                    "[jobserver] Using implicit token; active jobs: {} -> {}",
+                    state.active_jobs - 1,
+                    state.active_jobs
+                );
+                return ConcurrencyLimiterToken {
+                    state: self.state.clone(),
+                    available_token_condvar: self.available_token_condvar.clone(),
+                };
+            }
+
+            if state.active_jobs < state.explicit_tokens.len() + 1 {
+                state.active_jobs += 1;
+                eprintln!(
+                    "[jobserver] Reused existing token; active jobs: {} -> {}",
+                    state.active_jobs - 1,
+                    state.active_jobs
+                );
+                return ConcurrencyLimiterToken {
+                    state: self.state.clone(),
+                    available_token_condvar: self.available_token_condvar.clone(),
+                };
+            }
+
+            eprintln!("[jobserver] Requesting new token");
+            self.helper_thread.request_token();
+            state = self.available_token_condvar.wait(state).unwrap();
         }
-
-        if let Ok(()) = self.rx_job_finished.try_recv() {
-            state.active_jobs += 1;
-            assert!(state.active_jobs <= state.pending_jobs);
-            eprintln!(
-                "[jobserver] Reused existing token; active jobs: {} -> {}",
-                state.active_jobs - 1,
-                state.active_jobs
-            );
-            return ConcurrencyLimiterToken { state: self.state.clone() };
-        }
-
-        drop(state);
-
-        eprintln!("[jobserver] Requesting new token");
-        self.helper_thread.request_token();
-        // FIXME select between rx_job_finished and rx_token
-        // Maybe use a CondVar for this?
-        let token = self.rx_token.recv().unwrap();
-        eprintln!("[jobserver] Got new token");
-        let mut state = self.state.lock().unwrap();
-        state.explicit_tokens.push(token);
-        state.active_jobs += 1;
-        ConcurrencyLimiterToken { state: self.state.clone() }
     }
 }
 
 #[derive(Debug)]
 struct ConcurrencyLimiterToken {
     state: Arc<Mutex<ConcurrencyLimiterState>>,
+    available_token_condvar: Arc<Condvar>,
 }
 
 impl Drop for ConcurrencyLimiter {
@@ -596,17 +593,24 @@ impl Drop for ConcurrencyLimiter {
 
 impl Drop for ConcurrencyLimiterToken {
     fn drop(&mut self) {
-        eprintln!("[jobserver] Releasing token");
         let mut state = self.state.lock().unwrap();
         state.pending_jobs -= 1;
         state.active_jobs -= 1;
         assert!(state.active_jobs <= state.pending_jobs);
         if state.active_jobs == state.pending_jobs {
-            eprintln!("[jobserver] Released token; active jobs: {} -> {}", state.active_jobs + 1, state.active_jobs);
+            eprintln!(
+                "[jobserver] Released token to jobserver; active jobs: {} -> {}",
+                state.active_jobs + 1,
+                state.active_jobs
+            );
             state.explicit_tokens.pop();
         } else {
-            eprintln!("[jobserver] Allowing token to be reused; active jobs: {} -> {}", state.active_jobs + 1, state.active_jobs);
-            state.tx_job_finished.send(()).unwrap();
+            eprintln!(
+                "[jobserver] Released token for reuse; active jobs: {} -> {}",
+                state.active_jobs + 1,
+                state.active_jobs
+            );
+            self.available_token_condvar.notify_one();
         }
     }
 }
