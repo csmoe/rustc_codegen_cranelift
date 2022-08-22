@@ -45,6 +45,7 @@ pub(crate) struct OngoingCodegen {
     metadata_module: Option<CompiledModule>,
     metadata: EncodedMetadata,
     crate_info: CrateInfo,
+    concurrency_limiter: ConcurrencyLimiter,
 }
 
 impl OngoingCodegen {
@@ -103,6 +104,8 @@ impl OngoingCodegen {
                 modules.push(module_global_asm);
             }
         }
+
+        drop(self.concurrency_limiter);
 
         (
             CodegenResults {
@@ -467,6 +470,7 @@ pub(crate) fn run_aot(
         metadata_module,
         metadata,
         crate_info: CrateInfo::new(tcx, target_cpu),
+        concurrency_limiter,
     })
 }
 
@@ -500,7 +504,7 @@ fn determine_cgu_reuse<'tcx>(tcx: TyCtxt<'tcx>, cgu: &CodegenUnit<'tcx>) -> CguR
 }
 
 struct ConcurrencyLimiter {
-    helper_thread: jobserver::HelperThread,
+    helper_thread: Option<jobserver::HelperThread>,
     state: Arc<Mutex<ConcurrencyLimiterState>>,
     available_token_condvar: Arc<Condvar>,
 }
@@ -510,6 +514,32 @@ struct ConcurrencyLimiterState {
     pending_jobs: usize,
     active_jobs: usize,
     explicit_tokens: Vec<jobserver::Acquired>,
+}
+
+impl ConcurrencyLimiterState {
+    fn assert_invariants(&self) {
+        // There must be no excess active jobs
+        assert!(self.active_jobs <= self.pending_jobs);
+
+        // There may not be more active jobs than there are tokens
+        assert!(self.active_jobs <= self.explicit_tokens.len() + 1);
+    }
+
+    fn job_started(&mut self) {
+        self.assert_invariants();
+        self.active_jobs += 1;
+        self.assert_invariants();
+    }
+
+    fn job_finished(&mut self) {
+        self.assert_invariants();
+        self.pending_jobs -= 1;
+        self.active_jobs -= 1;
+        if self.active_jobs == self.pending_jobs {
+            self.explicit_tokens.pop();
+        }
+        self.assert_invariants();
+    }
 }
 
 impl ConcurrencyLimiter {
@@ -527,32 +557,26 @@ impl ConcurrencyLimiter {
             .jobserver
             .clone()
             .into_helper_thread(move |token| {
-                eprintln!("[jobserver] Acquired token from jobserver");
                 let mut state = state_helper.lock().unwrap();
                 state.explicit_tokens.push(token.unwrap());
                 available_token_condvar_helper.notify_one();
             })
             .unwrap();
         ConcurrencyLimiter {
-            helper_thread,
+            helper_thread: Some(helper_thread),
             state,
             available_token_condvar: Arc::new(Condvar::new()),
         }
     }
 
     fn acquire(&mut self) -> ConcurrencyLimiterToken {
-        eprintln!("[jobserver] Acquiring token");
-
         let mut state = self.state.lock().unwrap();
         loop {
-            assert!(state.active_jobs + 1 <= state.pending_jobs);
+            state.assert_invariants();
+
             if state.active_jobs == 0 {
-                state.active_jobs += 1;
-                eprintln!(
-                    "[jobserver] Using implicit token; active jobs: {} -> {}",
-                    state.active_jobs - 1,
-                    state.active_jobs
-                );
+                // Using the implicit token
+                state.job_started();
                 return ConcurrencyLimiterToken {
                     state: self.state.clone(),
                     available_token_condvar: self.available_token_condvar.clone(),
@@ -560,22 +584,29 @@ impl ConcurrencyLimiter {
             }
 
             if state.active_jobs < state.explicit_tokens.len() + 1 {
-                state.active_jobs += 1;
-                eprintln!(
-                    "[jobserver] Reused existing token; active jobs: {} -> {}",
-                    state.active_jobs - 1,
-                    state.active_jobs
-                );
+                // Using an explicit token
+                state.job_started();
                 return ConcurrencyLimiterToken {
                     state: self.state.clone(),
                     available_token_condvar: self.available_token_condvar.clone(),
                 };
             }
 
-            eprintln!("[jobserver] Requesting new token");
-            self.helper_thread.request_token();
+            self.helper_thread.as_mut().unwrap().request_token();
             state = self.available_token_condvar.wait(state).unwrap();
         }
+    }
+}
+
+impl Drop for ConcurrencyLimiter {
+    fn drop(&mut self) {
+        //
+        self.helper_thread.take();
+
+        // Assert that all jobs have finished
+        let state = Mutex::get_mut(Arc::get_mut(&mut self.state).unwrap()).unwrap();
+        assert_eq!(state.pending_jobs, 0);
+        assert_eq!(state.active_jobs, 0);
     }
 }
 
@@ -585,32 +616,10 @@ struct ConcurrencyLimiterToken {
     available_token_condvar: Arc<Condvar>,
 }
 
-impl Drop for ConcurrencyLimiter {
-    fn drop(&mut self) {
-        // FIXME wait for all pending tokens
-    }
-}
-
 impl Drop for ConcurrencyLimiterToken {
     fn drop(&mut self) {
         let mut state = self.state.lock().unwrap();
-        state.pending_jobs -= 1;
-        state.active_jobs -= 1;
-        assert!(state.active_jobs <= state.pending_jobs);
-        if state.active_jobs == state.pending_jobs {
-            eprintln!(
-                "[jobserver] Released token to jobserver; active jobs: {} -> {}",
-                state.active_jobs + 1,
-                state.active_jobs
-            );
-            state.explicit_tokens.pop();
-        } else {
-            eprintln!(
-                "[jobserver] Released token for reuse; active jobs: {} -> {}",
-                state.active_jobs + 1,
-                state.active_jobs
-            );
-            self.available_token_condvar.notify_one();
-        }
+        state.job_finished();
+        self.available_token_condvar.notify_one();
     }
 }
