@@ -509,46 +509,108 @@ struct ConcurrencyLimiter {
     available_token_condvar: Arc<Condvar>,
 }
 
-#[derive(Debug)]
-struct ConcurrencyLimiterState {
-    pending_jobs: usize,
-    active_jobs: usize,
-    explicit_tokens: Vec<jobserver::Acquired>,
-}
+mod state {
+    #[derive(Debug)]
+    pub(super) struct ConcurrencyLimiterState {
+        pending_jobs: usize,
+        active_jobs: usize,
 
-impl ConcurrencyLimiterState {
-    fn assert_invariants(&self) {
-        // There must be no excess active jobs
-        assert!(self.active_jobs <= self.pending_jobs);
+        // None is used to represent the implicit token, Some to represent explicit tokens
+        tokens: Vec<Option<jobserver::Acquired>>,
 
-        // There may not be more active jobs than there are tokens
-        assert!(self.active_jobs <= self.explicit_tokens.len() + 1);
+        new_token: Option<jobserver::Acquired>,
     }
 
-    fn job_started(&mut self) {
-        self.assert_invariants();
-        self.active_jobs += 1;
-        self.assert_invariants();
-    }
-
-    fn job_finished(&mut self) {
-        self.assert_invariants();
-        self.pending_jobs -= 1;
-        self.active_jobs -= 1;
-        if self.active_jobs == self.pending_jobs {
-            self.explicit_tokens.pop();
+    impl ConcurrencyLimiterState {
+        pub(super) fn new(pending_jobs: usize) -> Self {
+            ConcurrencyLimiterState {
+                pending_jobs,
+                active_jobs: 0,
+                tokens: vec![None],
+                new_token: None,
+            }
         }
-        self.assert_invariants();
+
+        pub(super) fn assert_invariants(&self) {
+            // There must be no excess active jobs
+            assert!(self.active_jobs <= self.pending_jobs);
+
+            // There may not be more active jobs than there are tokens
+            assert!(self.active_jobs <= self.tokens.len());
+        }
+
+        pub(super) fn assert_done(&self) {
+            assert_eq!(self.pending_jobs, 0);
+            assert_eq!(self.active_jobs, 0);
+        }
+
+        pub(super) fn add_new_token(&mut self, token: jobserver::Acquired) {
+            self.new_token = Some(token);
+        }
+
+        pub(super) fn try_start_job(&mut self) -> bool {
+            if self.active_jobs < self.tokens.len() {
+                // Using existing token
+                self.job_started();
+                return true;
+            }
+
+            if let Some(new_token) = self.new_token.take() {
+                // Using new token
+                self.tokens.push(Some(new_token));
+                self.job_started();
+                return true;
+            }
+
+            false
+        }
+
+        pub(super) fn job_started(&mut self) {
+            self.assert_invariants();
+            self.active_jobs += 1;
+            self.drop_excess_capacity();
+            self.assert_invariants();
+        }
+
+        pub(super) fn job_finished(&mut self) {
+            self.assert_invariants();
+            self.pending_jobs -= 1;
+            self.active_jobs -= 1;
+            self.assert_invariants();
+            self.drop_excess_capacity();
+            self.assert_invariants();
+        }
+
+        fn drop_excess_capacity(&mut self) {
+            self.assert_invariants();
+            if self.active_jobs == self.pending_jobs {
+                // Drop all excess tokens
+                self.new_token.take();
+                while self.active_jobs < self.tokens.len() {
+                    self.tokens.pop().unwrap();
+                }
+            } else {
+                // Keep some excess tokens to satisfy requests faster
+                const MAX_EXTRA_CAPACITY: usize = 2;
+                while self.active_jobs + MAX_EXTRA_CAPACITY
+                    < self.tokens.len() + self.new_token.is_some() as usize
+                {
+                    if self.new_token.take().is_some() {
+                        continue;
+                    }
+                    assert!(self.tokens.pop().unwrap().is_some());
+                }
+            }
+            self.assert_invariants();
+        }
     }
 }
+
+use state::ConcurrencyLimiterState;
 
 impl ConcurrencyLimiter {
     fn new(sess: &Session, pending_jobs: usize) -> Self {
-        let state = Arc::new(Mutex::new(ConcurrencyLimiterState {
-            pending_jobs,
-            active_jobs: 0,
-            explicit_tokens: vec![],
-        }));
+        let state = Arc::new(Mutex::new(ConcurrencyLimiterState::new(pending_jobs)));
         let available_token_condvar = Arc::new(Condvar::new());
 
         let state_helper = state.clone();
@@ -558,7 +620,7 @@ impl ConcurrencyLimiter {
             .clone()
             .into_helper_thread(move |token| {
                 let mut state = state_helper.lock().unwrap();
-                state.explicit_tokens.push(token.unwrap());
+                state.add_new_token(token.unwrap());
                 available_token_condvar_helper.notify_one();
             })
             .unwrap();
@@ -574,18 +636,7 @@ impl ConcurrencyLimiter {
         loop {
             state.assert_invariants();
 
-            if state.active_jobs == 0 {
-                // Using the implicit token
-                state.job_started();
-                return ConcurrencyLimiterToken {
-                    state: self.state.clone(),
-                    available_token_condvar: self.available_token_condvar.clone(),
-                };
-            }
-
-            if state.active_jobs < state.explicit_tokens.len() + 1 {
-                // Using an explicit token
-                state.job_started();
+            if state.try_start_job() {
                 return ConcurrencyLimiterToken {
                     state: self.state.clone(),
                     available_token_condvar: self.available_token_condvar.clone(),
@@ -605,8 +656,7 @@ impl Drop for ConcurrencyLimiter {
 
         // Assert that all jobs have finished
         let state = Mutex::get_mut(Arc::get_mut(&mut self.state).unwrap()).unwrap();
-        assert_eq!(state.pending_jobs, 0);
-        assert_eq!(state.active_jobs, 0);
+        state.assert_done();
     }
 }
 
