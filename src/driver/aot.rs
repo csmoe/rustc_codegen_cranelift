@@ -3,6 +3,8 @@
 
 use std::fs::File;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -103,8 +105,6 @@ impl OngoingCodegen {
                 modules.push(module_global_asm);
             }
         }
-
-        sess.jobserver.acquire_raw().unwrap();
 
         (
             CodegenResults {
@@ -249,14 +249,13 @@ fn reuse_workproduct_for_cgu(
 
 fn module_codegen(
     tcx: TyCtxt<'_>,
-    (backend_config, global_asm_config, cgu_name): (
+    (backend_config, global_asm_config, cgu_name, token): (
         BackendConfig,
         Arc<GlobalAsmConfig>,
         rustc_span::Symbol,
+        ConcurrencyLimiterToken,
     ),
 ) -> OngoingModuleCodegen {
-    let token = tcx.sess.jobserver.acquire().unwrap();
-
     let (cgu_name, mut cx, mut module, codegened_functions) = tcx.sess.time("codegen cgu", || {
         let cgu = tcx.codegen_unit(cgu_name);
         let mono_items = cgu.items_in_deterministic_order(tcx);
@@ -358,7 +357,7 @@ pub(crate) fn run_aot(
 
     let global_asm_config = Arc::new(crate::global_asm::GlobalAsmConfig::new(tcx));
 
-    tcx.sess.jobserver.release_raw().unwrap();
+    let mut concurrency_limiter = ConcurrencyLimiter::new(tcx.sess);
 
     let modules = super::time(tcx, backend_config.display_cg_time, "codegen mono items", || {
         cgus.iter()
@@ -377,7 +376,7 @@ pub(crate) fn run_aot(
                             .with_task(
                                 dep_node,
                                 tcx,
-                                (backend_config.clone(), global_asm_config.clone(), cgu.name()),
+                                (backend_config.clone(), global_asm_config.clone(), cgu.name(), concurrency_limiter.acquire()),
                                 module_codegen,
                                 Some(rustc_middle::dep_graph::hash_result),
                             )
@@ -495,4 +494,60 @@ fn determine_cgu_reuse<'tcx>(tcx: TyCtxt<'tcx>, cgu: &CodegenUnit<'tcx>) -> CguR
     );
 
     if tcx.try_mark_green(&dep_node) { CguReuse::PreLto } else { CguReuse::No }
+}
+
+struct ConcurrencyLimiter {
+    jobserver: jobserver::Client,
+    helper_thread: jobserver::HelperThread,
+    rx_token: Receiver<()>,
+    token_count: Arc<AtomicUsize>,
+}
+
+impl ConcurrencyLimiter {
+    fn new(sess: &Session) -> Self {
+        let (tx_token, rx_token) = std::sync::mpsc::channel();
+        tx_token.send(()).unwrap(); // Implicit token
+        let helper_thread = sess
+            .jobserver
+            .clone()
+            .into_helper_thread(move |token| {
+                token.unwrap().drop_without_releasing();
+                tx_token.send(()).unwrap();
+            })
+            .unwrap();
+        ConcurrencyLimiter {
+            jobserver: sess.jobserver.clone(),
+            helper_thread,
+            rx_token,
+            token_count: Arc::new(AtomicUsize::new(1)),
+        }
+    }
+
+    fn acquire(&mut self) -> ConcurrencyLimiterToken {
+        self.helper_thread.request_token();
+        let () = self.rx_token.recv().unwrap();
+        self.token_count.fetch_add(1, Ordering::SeqCst);
+        ConcurrencyLimiterToken { jobserver: self.jobserver.clone(), token_count: self.token_count.clone() }
+    }
+}
+
+#[derive(Debug)]
+struct ConcurrencyLimiterToken {
+    jobserver: jobserver::Client,
+    token_count: Arc<AtomicUsize>,
+}
+
+impl Drop for ConcurrencyLimiter {
+    fn drop(&mut self) {
+        // FIXME wait for all pending tokens
+    }
+}
+
+impl Drop for ConcurrencyLimiterToken {
+    fn drop(&mut self) {
+        // Don't release the implicit token
+        if self.token_count.fetch_sub(1, Ordering::SeqCst) > 1 {
+            self.jobserver.release_raw().unwrap();
+        }
+    }
 }

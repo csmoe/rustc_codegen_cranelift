@@ -4,6 +4,7 @@
 #![warn(unused_lifetimes)]
 #![warn(unreachable_pub)]
 
+extern crate jobserver;
 #[macro_use]
 extern crate rustc_middle;
 extern crate rustc_ast;
