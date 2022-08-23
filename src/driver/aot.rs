@@ -517,8 +517,6 @@ mod state {
 
         // None is used to represent the implicit token, Some to represent explicit tokens
         tokens: Vec<Option<jobserver::Acquired>>,
-
-        new_token: Option<jobserver::Acquired>,
     }
 
     impl ConcurrencyLimiterState {
@@ -527,7 +525,6 @@ mod state {
                 pending_jobs,
                 active_jobs: 0,
                 tokens: vec![None],
-                new_token: None,
             }
         }
 
@@ -545,19 +542,13 @@ mod state {
         }
 
         pub(super) fn add_new_token(&mut self, token: jobserver::Acquired) {
-            self.new_token = Some(token);
+            self.tokens.push(Some(token));
+            self.drop_excess_capacity();
         }
 
         pub(super) fn try_start_job(&mut self) -> bool {
             if self.active_jobs < self.tokens.len() {
                 // Using existing token
-                self.job_started();
-                return true;
-            }
-
-            if let Some(new_token) = self.new_token.take() {
-                // Using new token
-                self.tokens.push(Some(new_token));
                 self.job_started();
                 return true;
             }
@@ -585,21 +576,11 @@ mod state {
             self.assert_invariants();
             if self.active_jobs == self.pending_jobs {
                 // Drop all excess tokens
-                self.new_token.take();
-                while self.active_jobs < self.tokens.len() {
-                    self.tokens.pop().unwrap();
-                }
+                self.tokens.truncate(std::cmp::max(self.active_jobs, 1));
             } else {
                 // Keep some excess tokens to satisfy requests faster
                 const MAX_EXTRA_CAPACITY: usize = 2;
-                while self.active_jobs + MAX_EXTRA_CAPACITY
-                    < self.tokens.len() + self.new_token.is_some() as usize
-                {
-                    if self.new_token.take().is_some() {
-                        continue;
-                    }
-                    assert!(self.tokens.pop().unwrap().is_some());
-                }
+                self.tokens.truncate(std::cmp::max(self.active_jobs + MAX_EXTRA_CAPACITY, 1));
             }
             self.assert_invariants();
         }
