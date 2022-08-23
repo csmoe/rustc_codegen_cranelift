@@ -485,5 +485,5 @@ fn determine_cgu_reuse<'tcx>(tcx: TyCtxt<'tcx>, cgu: &CodegenUnit<'tcx>) -> CguR
         cgu.name()
     );
 
-    if tcx.try_mark_green(&dep_node) { CguReuse::PreLto } else { CguReuse::No }
+    if tcx.try_mark_green(&dep_node) { CguReuse::PostLto } else { CguReuse::No }
 }
